@@ -84,6 +84,7 @@ const STEPS = [
   ['create-transaction-settings.js', 'transaction settings'],
   ['add-artist-incentive-report-page.js', 'artist incentive report page'],
   ['create-process-flow-page.js', 'process flow page'],
+  ['create-newsfeed.js', 'dashboard newsfeed (posts, photos, comments, reactions)'],
   ['create-account-type-permissions.js', 'account-type permission templates'],
 
   // Last: registers any page the migrations above did not, and gives the seeded admin an

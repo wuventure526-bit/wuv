@@ -3,6 +3,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Feed from './pages/Feed';
 import Employees from './pages/Employees';
 import Users from './pages/Users';
 import UserWizard from './pages/UserWizard';
@@ -162,7 +163,11 @@ function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/dashboard" element={<Dashboard />} />
+        {/* The Dashboard is now the company newsfeed. The role-based analytics dashboard it
+            replaced still lives at /dashboard/analytics -- linked from the feed's left rail --
+            because the two answer different questions and both are worth keeping. */}
+        <Route path="/dashboard" element={<Feed />} />
+        <Route path="/dashboard/analytics" element={<Dashboard />} />
         <Route path="/tickets" element={<Tickets />} />
         <Route path="/tickets/:id" element={<TicketView />} />
         <Route path="/process-flow" element={<ProcessFlow />} />

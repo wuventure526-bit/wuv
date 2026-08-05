@@ -29,6 +29,7 @@ const chartOfAccountRoutes = require('./routes/chartOfAccounts');
 const scheduledJobOrderRoutes = require('./routes/scheduledJobOrders');
 const assemblyBuildRoutes = require('./routes/assemblyBuilds');
 const dashboardRoutes = require('./routes/dashboard');
+const newsfeedRoutes = require('./routes/newsfeed');
 const transferOrderRoutes = require('./routes/transferOrders');
 const officeSupplyRequisitionRoutes = require('./routes/officeSupplyRequisitions');
 const qualityInspectionRoutes = require('./routes/qualityInspections');
@@ -74,7 +75,11 @@ const { sendTicketReminders } = require('./scripts/ticket_reminder');
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '2mb' })); // room for the base64 profile-picture payload
+// 2mb covered the base64 profile-picture payload. A newsfeed post carries up to four photos,
+// each resized client-side to 1600px JPEG (~400KB, ~550KB once base64'd), so the ceiling has to
+// clear roughly 2.2MB of images plus the post text -- 12mb leaves room without inviting an
+// unbounded upload (the feed route caps each decoded image at 4MB on its own).
+app.use(express.json({ limit: '12mb' }));
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -103,6 +108,7 @@ app.use('/api/chart-of-accounts', chartOfAccountRoutes);
 app.use('/api/scheduled-jo', scheduledJobOrderRoutes);
 app.use('/api/assembly-builds', assemblyBuildRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/newsfeed', newsfeedRoutes);
 app.use('/api/transfer-orders', transferOrderRoutes);
 app.use('/api/office-supply-requisitions', officeSupplyRequisitionRoutes);
 app.use('/api/quality-inspections', qualityInspectionRoutes);

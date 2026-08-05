@@ -1,3 +1,39 @@
+// Resizes a user-picked image down to a JPEG data URL while KEEPING its aspect ratio -- the
+// newsfeed's photos, where a centre-crop to a square would cut the top off a group shot.
+// Returns the dimensions alongside the data URL so the feed can reserve the right space before
+// the photo has loaded (no layout jump as you scroll).
+//
+// Same reasoning as fileToSquareDataUrl below for doing it in the browser: the server takes
+// plain JSON and never has to handle a multipart upload. 1600px at q0.8 lands around 400KB,
+// which is what the API's per-image cap and the 12mb JSON body limit are sized for.
+export function fileToDataUrl(file, maxDim = 1600, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      // A transparent PNG flattened onto nothing turns black once it is JPEG; white matches
+      // the card it will sit on.
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve({ data_url: canvas.toDataURL('image/jpeg', quality), width, height });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read that image file.'));
+    };
+    img.src = objectUrl;
+  });
+}
+
 // Resizes/center-crops a user-picked image file down to a small square JPEG data URL
 // entirely in the browser (canvas), so the server never has to handle multipart uploads
 // or file storage -- the resulting data URL is small enough to send as plain JSON and

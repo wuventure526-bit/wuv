@@ -1,0 +1,528 @@
+/* ============================================================================
+   Company newsfeed (Dashboard)
+
+   The layout is Facebook's -- three columns, a composer above a single stream of
+   cards, a reaction row under each post, comments in bubbles -- and the palette is
+   entirely this system's: every colour below is a theme token (--accent moss green,
+   --gold, --surface, --border), so the feed follows light/dark mode with everything
+   else and never introduces Facebook's blue.
+
+   Motion is the other half of the design. A feed is a page you hover across
+   constantly, so cards lift, photos push in, reactions pop in one after another and
+   buttons answer the press. Everything is transform/opacity only (both composited,
+   so none of it touches layout), and the whole lot is switched off under
+   prefers-reduced-motion at the bottom of the file.
+
+   Kept in its own file rather than appended to index.css: this is one self-contained
+   feature's worth of styling, and index.css is already 1,600 lines of shared chrome.
+   ============================================================================ */
+:root {
+  /* Fast out, settle slow -- the curve that makes a lift feel like weight rather
+     than a jump. Shared by every transition below so the whole page moves as one. */
+  --feed-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --feed-lift-shadow: 0 16px 32px -14px rgba(74, 99, 41, 0.42), 0 3px 10px -6px rgba(0, 0, 0, 0.12);
+  --feed-glow: rgba(74, 99, 41, 0.18);
+  --feed-hairline: linear-gradient(90deg, var(--accent), var(--gold));
+}
+:root[data-theme="dark"] {
+  /* A green-tinted shadow disappears on a near-black page, so dark mode leans on a
+     deeper drop plus a faint accent rim to make the lift readable. */
+  --feed-lift-shadow: 0 18px 36px -16px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(163, 194, 85, 0.12);
+  --feed-glow: rgba(163, 194, 85, 0.16);
+}
+
+.feed-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 640px) 300px;
+  gap: 20px;
+  justify-content: center;
+  align-items: start;
+  padding: 4px 0 40px;
+}
+.feed-rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 16px; }
+.feed-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+.feed-card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  transition:
+    transform 0.24s var(--feed-ease),
+    box-shadow 0.24s var(--feed-ease),
+    border-color 0.24s var(--feed-ease);
+}
+.feed-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--feed-lift-shadow);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+/* A moss-to-gold hairline that wipes across the top edge on hover -- the one place
+   the two brand colours meet, and enough to make a card feel picked up rather than
+   just moved. Drawn as a pseudo-element so it costs nothing when idle. */
+.feed-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  border-radius: 12px 12px 0 0;
+  background: var(--feed-hairline);
+  transform: scaleX(0);
+  transform-origin: left;
+  opacity: 0;
+  transition: transform 0.34s var(--feed-ease), opacity 0.2s ease;
+  pointer-events: none;
+  /* Above the profile card's own gradient band, which is a later pseudo-element and
+     would otherwise paint over this. */
+  z-index: 2;
+}
+.feed-card:hover::before { transform: scaleX(1); opacity: 1; }
+
+.feed-rail-title {
+  font-weight: 700;
+  color: var(--text-h);
+  font-size: 0.95rem;
+  margin-bottom: 10px;
+}
+
+/* Each post fades up as it mounts, so a new post arriving at the top of the feed --
+   yours or one loaded by Load More -- announces itself instead of blinking in. */
+@keyframes feed-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+.feed-post { animation: feed-rise 0.34s var(--feed-ease) backwards; }
+
+/* --- left rail ---------------------------------------------------------- */
+.feed-profile {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px;
+  padding: 26px 16px 20px;
+  overflow: hidden;
+}
+/* Brand band behind the avatar, the way a profile card carries a cover photo. */
+.feed-profile::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 56px;
+  background: linear-gradient(120deg, var(--accent-bg), var(--gold-bg));
+  z-index: 0;
+}
+.feed-profile > * { position: relative; z-index: 1; }
+.feed-profile .avatar-wrap { transition: transform 0.28s var(--feed-ease); }
+.feed-profile:hover .avatar-wrap { transform: scale(1.06); }
+.feed-profile-name { font-weight: 700; color: var(--text-h); margin-top: 6px; }
+.feed-profile-role {
+  font-size: 0.78rem;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+.feed-shortcuts { display: flex; flex-direction: column; gap: 2px; }
+.feed-shortcut {
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 0.9rem;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.22s var(--feed-ease);
+}
+.feed-shortcut:hover { background: var(--accent-bg); color: var(--accent); transform: translateX(4px); }
+.feed-shortcut-icon {
+  font-size: 1.05rem;
+  transition: transform 0.26s var(--feed-ease);
+}
+.feed-shortcut:hover .feed-shortcut-icon { transform: scale(1.2) rotate(-6deg); }
+
+/* --- right rail --------------------------------------------------------- */
+.feed-about-text { font-size: 0.85rem; color: var(--text); margin: 0 0 12px; line-height: 1.5; }
+.feed-guide-list { margin: 0; padding-left: 18px; font-size: 0.82rem; color: var(--text); line-height: 1.7; }
+
+/* --- composer ----------------------------------------------------------- */
+.feed-composer-top { display: flex; gap: 10px; align-items: flex-start; }
+.feed-composer-trigger {
+  flex: 1; text-align: left; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 999px;
+  padding: 10px 16px; color: var(--text); font-size: 0.95rem; font-family: var(--sans);
+  transition: border-color 0.2s ease, box-shadow 0.24s var(--feed-ease), background 0.2s ease;
+}
+.feed-composer-trigger:hover {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 4px var(--feed-glow);
+}
+.feed-composer-textarea {
+  flex: 1; resize: vertical; min-height: 76px;
+  background: transparent; border: none; outline: none;
+  color: var(--text-h); font-size: 1.05rem; font-family: var(--sans); line-height: 1.5;
+}
+.feed-composer-photos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.feed-composer-photo {
+  position: relative; width: 92px; height: 92px;
+  border-radius: 8px; overflow: hidden; border: 1px solid var(--border);
+  animation: feed-pop 0.28s var(--feed-ease) backwards;
+  transition: transform 0.22s var(--feed-ease), border-color 0.22s ease;
+}
+.feed-composer-photo:hover { transform: translateY(-2px) scale(1.03); border-color: var(--accent); }
+.feed-composer-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.feed-composer-photo-remove {
+  position: absolute; top: 4px; right: 4px;
+  width: 22px; height: 22px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 0.7rem; line-height: 1;
+  opacity: 0; transform: scale(0.8);
+  transition: opacity 0.18s ease, transform 0.18s var(--feed-ease), background 0.18s ease;
+}
+.feed-composer-photo:hover .feed-composer-photo-remove { opacity: 1; transform: scale(1); }
+.feed-composer-photo-remove:hover { background: var(--danger); }
+@keyframes feed-pop {
+  from { opacity: 0; transform: scale(0.86); }
+  to { opacity: 1; transform: none; }
+}
+
+.feed-composer-error, .feed-post-error {
+  margin-top: 10px; font-size: 0.82rem;
+  color: var(--danger); background: var(--danger-bg);
+  border-radius: 8px; padding: 6px 10px;
+  animation: feed-shake 0.36s ease both;
+}
+/* A refused post should register as a refusal -- a short shake reads faster than
+   red text alone. */
+@keyframes feed-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  50% { transform: translateX(4px); }
+  75% { transform: translateX(-2px); }
+}
+
+.feed-composer-actions {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.feed-composer-submit { margin-left: auto; display: flex; gap: 8px; }
+
+/* --- post card ---------------------------------------------------------- */
+.feed-post { padding: 14px 0 6px; }
+.feed-post > *:not(.feed-collage):not(.feed-post-actions) { padding-left: 16px; padding-right: 16px; }
+.feed-post-header { display: flex; align-items: center; gap: 10px; }
+.feed-post-header .avatar-wrap { transition: transform 0.26s var(--feed-ease); }
+.feed-post:hover .feed-post-header .avatar-wrap { transform: scale(1.06); }
+.feed-post-ident { flex: 1; min-width: 0; }
+.feed-post-author { font-weight: 700; color: var(--text-h); transition: color 0.2s ease; }
+.feed-post:hover .feed-post-author { color: var(--accent); }
+.feed-post-time { font-size: 0.78rem; color: var(--text); opacity: 0.75; }
+.feed-post-edited { opacity: 0.8; }
+.feed-post-body { margin-top: 10px; white-space: pre-wrap; word-break: break-word; color: var(--text-h); line-height: 1.55; }
+.feed-post-edit textarea {
+  width: 100%; margin-top: 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text-h); font-family: var(--sans); padding: 8px 10px;
+  transition: border-color 0.2s ease, box-shadow 0.24s var(--feed-ease);
+}
+.feed-post-edit textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--feed-glow); }
+.feed-post-edit .feed-composer-submit { margin-top: 8px; }
+
+.feed-icon-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--text); font-size: 1.3rem; line-height: 1;
+  width: 32px; height: 32px; border-radius: 50%;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.22s var(--feed-ease);
+}
+.feed-icon-btn:hover { background: var(--accent-bg); color: var(--accent); transform: rotate(90deg); }
+.feed-post-menu-wrap { position: relative; }
+.feed-post-menu {
+  position: absolute; right: 0; top: 100%; z-index: 30; min-width: 150px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--feed-lift-shadow); padding: 6px;
+  transform-origin: top right;
+  animation: feed-menu-in 0.16s var(--feed-ease) both;
+}
+@keyframes feed-menu-in {
+  from { opacity: 0; transform: scale(0.92) translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.feed-post-menu button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer;
+  padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: 0.88rem;
+  transition: background 0.15s ease, color 0.15s ease, padding-left 0.18s var(--feed-ease);
+}
+.feed-post-menu button:hover { background: var(--accent-bg); color: var(--accent); padding-left: 14px; }
+.feed-post-menu .feed-menu-danger:hover { background: var(--danger-bg); color: var(--danger); }
+
+/* --- photo collage ------------------------------------------------------ */
+.feed-collage { display: grid; gap: 2px; margin-top: 12px; background: var(--border); }
+.feed-collage-one { grid-template-columns: 1fr; }
+.feed-collage-two { grid-template-columns: 1fr 1fr; }
+.feed-collage-three { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.feed-collage-three .feed-collage-cell:first-child { grid-row: span 2; }
+.feed-collage-four { grid-template-columns: 1fr 1fr; }
+.feed-collage-cell {
+  position: relative; padding: 0; border: none; cursor: pointer;
+  background: var(--bg); overflow: hidden; min-height: 0;
+}
+.feed-collage-two .feed-collage-cell,
+.feed-collage-four .feed-collage-cell,
+.feed-collage-three .feed-collage-cell { aspect-ratio: 1 / 1; }
+.feed-collage-three .feed-collage-cell:first-child { aspect-ratio: auto; }
+.feed-collage-img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  transition: transform 0.45s var(--feed-ease), filter 0.3s ease;
+}
+/* The photo pushes into the frame on hover -- the cell clips it, so the card's own
+   geometry never moves. */
+.feed-collage-cell:hover .feed-collage-img { transform: scale(1.045); filter: brightness(1.04); }
+/* A single photo is shown whole rather than cropped -- one picture is the post, and
+   cutting the top off a poster or a group shot defeats it. */
+.feed-collage-one .feed-collage-img { object-fit: contain; background: #000; max-height: 560px; }
+.feed-collage-one .feed-collage-cell:hover .feed-collage-img { transform: scale(1.02); }
+.feed-collage-more {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.5); color: #fff; font-size: 1.6rem; font-weight: 700;
+  transition: background 0.24s ease, font-size 0.24s var(--feed-ease);
+}
+.feed-collage-cell:hover .feed-collage-more { background: rgba(0, 0, 0, 0.38); font-size: 1.8rem; }
+
+/* A sweeping highlight rather than a pulse: it reads as "loading" instead of
+   "broken", and matches the card surface it sits in. */
+.feed-photo-loading {
+  width: 100%; height: 100%; min-height: 180px;
+  background: linear-gradient(100deg, var(--bg) 30%, var(--accent-bg) 50%, var(--bg) 70%);
+  background-size: 260% 100%;
+  animation: feed-shimmer 1.5s ease-in-out infinite;
+}
+@keyframes feed-shimmer {
+  from { background-position: 140% 0; }
+  to { background-position: -40% 0; }
+}
+.feed-photo-missing {
+  width: 100%; min-height: 120px; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--text); font-size: 0.82rem; opacity: 0.7;
+}
+
+/* --- lightbox ----------------------------------------------------------- */
+.feed-lightbox {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex; align-items: center; justify-content: center;
+  animation: feed-fade 0.2s ease both;
+}
+@keyframes feed-fade { from { opacity: 0; } to { opacity: 1; } }
+.feed-lightbox-stage {
+  max-width: 92vw; max-height: 88vh; display: flex;
+  animation: feed-zoom 0.26s var(--feed-ease) both;
+}
+@keyframes feed-zoom {
+  from { opacity: 0; transform: scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+.feed-lightbox-img { max-width: 92vw; max-height: 88vh; object-fit: contain; }
+.feed-lightbox-close, .feed-lightbox-nav {
+  position: absolute; background: rgba(255, 255, 255, 0.12); color: #fff;
+  border: none; cursor: pointer; border-radius: 50%;
+  width: 44px; height: 44px; font-size: 1.5rem; line-height: 1;
+  transition: background 0.2s ease, transform 0.22s var(--feed-ease);
+}
+.feed-lightbox-close { top: 18px; right: 18px; font-size: 1.1rem; }
+.feed-lightbox-prev { left: 18px; }
+.feed-lightbox-next { right: 18px; }
+.feed-lightbox-close:hover { background: rgba(255, 255, 255, 0.28); transform: rotate(90deg); }
+.feed-lightbox-prev:hover { background: rgba(255, 255, 255, 0.28); transform: translateX(-3px) scale(1.08); }
+.feed-lightbox-next:hover { background: rgba(255, 255, 255, 0.28); transform: translateX(3px) scale(1.08); }
+.feed-lightbox-count { position: absolute; bottom: 20px; color: #fff; font-size: 0.85rem; opacity: 0.8; }
+
+/* --- reactions + actions ------------------------------------------------ */
+.feed-post-stats {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 10px; padding-bottom: 8px; font-size: 0.82rem; color: var(--text);
+}
+.feed-stat-reactions { display: flex; align-items: center; gap: 2px; cursor: default; }
+.feed-stat-emoji {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.72rem; margin-right: -5px;
+  transition: transform 0.22s var(--feed-ease), margin-right 0.22s var(--feed-ease);
+}
+/* Hovering the tally fans the stacked emoji apart, so you can see what they are. */
+.feed-stat-reactions:hover .feed-stat-emoji { transform: translateY(-2px) scale(1.12); margin-right: -1px; }
+.feed-stat-count { margin-left: 10px; opacity: 0.85; }
+.feed-link-btn {
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: var(--text); font-size: 0.8rem; opacity: 0.85; font-family: var(--sans);
+  transition: color 0.18s ease, opacity 0.18s ease;
+}
+.feed-link-btn:hover { color: var(--accent); text-decoration: underline; opacity: 1; }
+
+.feed-post-actions {
+  display: flex; margin: 0 16px; padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.feed-action-wrap { position: relative; flex: 1; display: flex; }
+.feed-action-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: none; border: none; cursor: pointer; border-radius: 8px;
+  padding: 9px 10px; color: var(--text); font-size: 0.88rem; font-weight: 600;
+  font-family: var(--sans);
+  transition: background 0.18s ease, color 0.18s ease, transform 0.14s var(--feed-ease);
+}
+.feed-action-btn:hover { background: var(--accent-bg); color: var(--accent); }
+/* The press itself, so a click lands rather than just changing colour. */
+.feed-action-btn:active { transform: scale(0.96); }
+.feed-action-btn.is-active { font-weight: 700; }
+.feed-action-icon { font-size: 1.05rem; transition: transform 0.26s var(--feed-ease); }
+.feed-action-btn:hover .feed-action-icon { transform: translateY(-2px) scale(1.16); }
+/* The emoji you picked keeps a slow heartbeat, marking the post as one you reacted to. */
+.feed-action-btn.is-active .feed-action-icon { animation: feed-beat 2.4s ease-in-out infinite; }
+/* A running animation outranks the hover transform, so the heartbeat stands down while
+   the pointer is on the button and lets the hover lift show. */
+.feed-action-btn.is-active:hover .feed-action-icon { animation: none; }
+@keyframes feed-beat {
+  0%, 88%, 100% { transform: none; }
+  92% { transform: scale(1.22); }
+  96% { transform: scale(1.08); }
+}
+
+.feed-reaction-picker {
+  position: absolute; bottom: 100%; left: 0; z-index: 40;
+  display: flex; gap: 2px; margin-bottom: 8px; padding: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; box-shadow: var(--feed-lift-shadow);
+  transform-origin: bottom left;
+  animation: feed-picker-in 0.2s var(--feed-ease) both;
+}
+@keyframes feed-picker-in {
+  from { opacity: 0; transform: scale(0.8) translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.feed-reaction-option {
+  position: relative; background: none; border: none; cursor: pointer;
+  font-size: 1.5rem; line-height: 1; padding: 4px 5px; border-radius: 50%;
+  transition: transform 0.18s var(--feed-ease);
+  animation: feed-pop 0.26s var(--feed-ease) backwards;
+}
+/* Staggered so the seven emoji arrive in sequence -- the detail that makes the
+   picker feel like it opened rather than appeared. */
+.feed-reaction-option:nth-child(1) { animation-delay: 0.00s; }
+.feed-reaction-option:nth-child(2) { animation-delay: 0.03s; }
+.feed-reaction-option:nth-child(3) { animation-delay: 0.06s; }
+.feed-reaction-option:nth-child(4) { animation-delay: 0.09s; }
+.feed-reaction-option:nth-child(5) { animation-delay: 0.12s; }
+.feed-reaction-option:nth-child(6) { animation-delay: 0.15s; }
+.feed-reaction-option:nth-child(7) { animation-delay: 0.18s; }
+.feed-reaction-option:hover { transform: translateY(-8px) scale(1.35); }
+.feed-reaction-option:active { transform: translateY(-4px) scale(1.1); }
+.feed-reaction-label {
+  position: absolute; bottom: 100%; left: 50%;
+  background: var(--text-h); color: var(--surface);
+  font-size: 0.62rem; padding: 2px 6px; border-radius: 999px;
+  opacity: 0; pointer-events: none; white-space: nowrap;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.16s ease, transform 0.16s var(--feed-ease);
+}
+.feed-reaction-option:hover .feed-reaction-label { opacity: 1; transform: translate(-50%, -2px); }
+
+/* --- comments ----------------------------------------------------------- */
+.feed-comments { padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.feed-view-more { align-self: flex-start; font-weight: 600; }
+.feed-comment { display: flex; gap: 8px; align-items: flex-start; animation: feed-rise 0.26s var(--feed-ease) backwards; }
+.feed-comment-body { min-width: 0; }
+.feed-comment-bubble {
+  background: var(--bg); border-radius: 16px; padding: 8px 12px;
+  transition: background 0.2s ease, transform 0.22s var(--feed-ease);
+}
+.feed-comment:hover .feed-comment-bubble { background: var(--accent-bg); transform: translateX(2px); }
+.feed-comment-author { font-weight: 700; font-size: 0.82rem; color: var(--text-h); }
+.feed-comment-text { font-size: 0.88rem; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.feed-comment-meta {
+  display: flex; gap: 12px; padding: 3px 12px 0;
+  font-size: 0.72rem; color: var(--text); opacity: 0;
+  transition: opacity 0.2s ease;
+}
+/* Timestamps and Delete stay out of the way until you look at a comment. */
+.feed-comment:hover .feed-comment-meta, .feed-comment:focus-within .feed-comment-meta { opacity: 0.8; }
+.feed-comment-form { display: flex; align-items: center; gap: 8px; }
+.feed-comment-form input {
+  flex: 1; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text-h);
+  padding: 9px 14px; font-size: 0.88rem; font-family: var(--sans); outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.24s var(--feed-ease);
+}
+.feed-comment-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--feed-glow); }
+.feed-comment-send {
+  background: none; border: none; cursor: pointer;
+  color: var(--accent); font-size: 1.1rem; padding: 4px 8px;
+  transition: transform 0.22s var(--feed-ease), opacity 0.2s ease;
+}
+.feed-comment-send:not(:disabled):hover { transform: translateX(3px) scale(1.15); }
+.feed-comment-send:disabled { opacity: 0.35; cursor: default; }
+
+/* --- empty state + paging ----------------------------------------------- */
+.feed-empty { text-align: center; padding: 40px 20px; }
+.feed-empty-icon { font-size: 2.4rem; display: inline-block; animation: feed-sway 3.6s ease-in-out infinite; }
+@keyframes feed-sway {
+  0%, 100% { transform: rotate(-8deg); }
+  50% { transform: rotate(8deg); }
+}
+.feed-empty-title { font-weight: 700; color: var(--text-h); margin-top: 8px; }
+.feed-empty-text { font-size: 0.88rem; color: var(--text); opacity: 0.8; margin-top: 4px; }
+.feed-load-more { align-self: center; transition: transform 0.22s var(--feed-ease), box-shadow 0.22s var(--feed-ease); }
+.feed-load-more:hover { transform: translateY(-2px); box-shadow: 0 0 0 4px var(--feed-glow); }
+
+/* Rails fall away before the feed itself does, so the stream keeps the full width on a
+   tablet and stays readable on a phone. */
+@media (max-width: 1180px) {
+  .feed-layout { grid-template-columns: 240px minmax(0, 640px); }
+  .feed-rail-right { display: none; }
+}
+@media (max-width: 900px) {
+  .feed-layout { grid-template-columns: minmax(0, 1fr); padding: 0 0 32px; }
+  .feed-rail-left { display: none; }
+}
+
+/* Everything above is decoration. Someone who has asked their system for less motion
+   gets the colour changes and none of the movement -- including the looping ones,
+   which are the most tiring of the set. */
+@media (prefers-reduced-motion: reduce) {
+  .feed-card,
+  .feed-card::before,
+  .feed-post,
+  .feed-comment,
+  .feed-shortcut,
+  .feed-shortcut-icon,
+  .feed-action-btn,
+  .feed-action-icon,
+  .feed-action-btn.is-active .feed-action-icon,
+  .feed-reaction-option,
+  .feed-reaction-picker,
+  .feed-reaction-label,
+  .feed-collage-img,
+  .feed-composer-photo,
+  .feed-composer-photo-remove,
+  .feed-comment-bubble,
+  .feed-comment-send,
+  .feed-icon-btn,
+  .feed-post-menu,
+  .feed-lightbox,
+  .feed-lightbox-stage,
+  .feed-lightbox-close,
+  .feed-lightbox-nav,
+  .feed-photo-loading,
+  .feed-empty-icon,
+  .feed-load-more,
+  .feed-profile .avatar-wrap,
+  .feed-post-header .avatar-wrap,
+  .feed-stat-emoji,
+  .feed-composer-error,
+  .feed-post-error {
+    transition: none;
+    animation: none;
+  }
+  .feed-card:hover,
+  .feed-shortcut:hover,
+  .feed-comment:hover .feed-comment-bubble,
+  .feed-load-more:hover { transform: none; }
+  .feed-comment-meta { opacity: 0.8; }
+}
