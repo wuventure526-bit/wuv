@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 import { useAuth } from '../context/useAuth';
 import Avatar from '../components/Avatar';
@@ -26,6 +26,11 @@ const SHORTCUTS = [
 export default function Feed() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Set by a notification click (/dashboard?post=42): that post is fetched on its own and
+  // shown first, because by the time anyone clicks the bell it may be pages down the feed.
+  const focusId = Number(searchParams.get('post')) || null;
+  const [focusPost, setFocusPost] = useState(null);
   const [posts, setPosts] = useState([]);
   const [nextBefore, setNextBefore] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -50,6 +55,17 @@ export default function Feed() {
     return () => { cancelled = true; };
   }, [load]);
 
+  useEffect(() => {
+    if (!focusId) { setFocusPost(null); return undefined; }
+    let cancelled = false;
+    api.get(`/newsfeed/${focusId}`)
+      .then(({ data }) => { if (!cancelled) setFocusPost(data); })
+      // A deleted post is the ordinary case here -- the notification outlived what it pointed
+      // at. Drop the pin and let the normal feed render.
+      .catch(() => { if (!cancelled) setFocusPost(null); });
+    return () => { cancelled = true; };
+  }, [focusId]);
+
   async function loadMore() {
     if (!nextBefore || loadingMore) return;
     setLoadingMore(true);
@@ -71,8 +87,23 @@ export default function Feed() {
   }
 
   function handlePosted(post) { setPosts((prev) => [post, ...prev]); }
-  function handleChanged(post) { setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, ...post } : p))); }
-  function handleRemoved(id) { setPosts((prev) => prev.filter((p) => p.id !== id)); }
+  function handleChanged(post) {
+    setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, ...post } : p)));
+    setFocusPost((prev) => (prev && prev.id === post.id ? { ...prev, ...post } : prev));
+  }
+  function handleRemoved(id) {
+    setPosts((prev) => prev.filter((p) => p.id !== id));
+    if (focusPost?.id === id) clearFocus();
+  }
+  function clearFocus() {
+    setFocusPost(null);
+    const next = new URLSearchParams(searchParams);
+    next.delete('post');
+    setSearchParams(next, { replace: true });
+  }
+
+  // The pinned copy is rendered above, so it must not appear twice.
+  const streamPosts = focusPost ? posts.filter((p) => p.id !== focusPost.id) : posts;
 
   return (
     <div className="feed-layout">
@@ -99,6 +130,21 @@ export default function Feed() {
 
         {error && <div className="error-banner">{error}</div>}
 
+        {focusPost && (
+          <div className="feed-focus">
+            <div className="feed-focus-bar">
+              <span>Opened from a notification</span>
+              <button type="button" className="feed-link-btn" onClick={clearFocus}>Back to the whole feed</button>
+            </div>
+            <FeedPostCard
+              post={focusPost}
+              viewer={user}
+              onChanged={handleChanged}
+              onRemoved={handleRemoved}
+            />
+          </div>
+        )}
+
         {loading && <LoadingSpinner />}
 
         {!loading && posts.length === 0 && (
@@ -109,7 +155,7 @@ export default function Feed() {
           </div>
         )}
 
-        {posts.map((post) => (
+        {streamPosts.map((post) => (
           <FeedPostCard
             key={post.id}
             post={post}

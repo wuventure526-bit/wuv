@@ -17,6 +17,10 @@ function notificationTypeLabel(type) {
     case 'ticket_approved': return 'Approved';
     case 'ticket_resolved': return 'Resolved';
     case 'gm_approval_needed': return 'GM Approval';
+    case 'feed_new_post': return 'New Post';
+    case 'feed_comment': return 'Comment';
+    case 'feed_reaction': return 'Reaction';
+    case 'feed_post_updated': return 'Post Updated';
     default:
       if (!type) return '';
       return type.replace(/_/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase());
@@ -96,6 +100,9 @@ export default function NotificationBell() {
       }
     }
     if (n.related_type === 'Ticket' && n.related_id) navigate(`/tickets/${n.related_id}`);
+    // The feed is the dashboard itself, so a post opens there with ?post= -- which pins that
+    // one to the top and highlights it, rather than dropping you at the feed to hunt for it.
+    if (n.related_type === 'FeedPost' && n.related_id) navigate(`/dashboard?post=${n.related_id}`);
   }
 
   async function markAllRead() {

@@ -526,3 +526,18 @@
   .feed-load-more:hover { transform: none; }
   .feed-comment-meta { opacity: 0.8; }
 }
+
+/* --- a post opened from a notification ---------------------------------- */
+/* Pinned above the stream with an accent frame, so it is obvious which post the
+   bell was talking about and equally obvious how to get back to the feed. */
+.feed-focus { display: flex; flex-direction: column; gap: 6px; }
+.feed-focus-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-size: 0.78rem; color: var(--accent);
+  background: var(--accent-bg); border-radius: 999px; padding: 5px 14px;
+}
+.feed-focus .feed-post {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--feed-glow), var(--shadow);
+}
+.feed-focus .feed-card::before { transform: scaleX(1); opacity: 1; }

@@ -25,6 +25,59 @@ async function isModerator(userId) {
   return u?.account_type === 'System Admin';
 }
 
+// Feed activity rides the notification table every other module already writes to, so it
+// lands in the same bell, the same dropdown and the same toast as a ticket approval -- one
+// place to look rather than a second inbox nobody checks.
+//
+// related_type 'FeedPost' is what the bell keys on to send a click to /dashboard?post=<id>.
+const NOTIFY_MESSAGE_MAX = 500;   // notifications.message is VARCHAR(500)
+
+function excerpt(text, max = 120) {
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+// Never notifies the person who caused the event -- you do not need telling about your own
+// click. Failures are swallowed: a notification is a courtesy, and losing one must never roll
+// back the comment or reaction that earned it.
+async function notify(recipientIds, { actorId, type, title, message, postId }) {
+  const targets = [...new Set(recipientIds)].filter((id) => id && id !== actorId);
+  if (!targets.length) return;
+  try {
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, message, related_type, related_id)
+       VALUES ${targets.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
+      targets.flatMap((id) => [id, type, title.slice(0, 255), (message || '').slice(0, NOTIFY_MESSAGE_MAX), 'FeedPost', postId])
+    );
+  } catch (err) {
+    console.error('newsfeed notification failed:', err.message);
+  }
+}
+
+// Everyone with a working login except the poster -- a company announcement is for the
+// company. Inactive accounts are skipped so a disabled user does not accrue a backlog.
+async function allOtherUserIds(actorId) {
+  const [rows] = await pool.query('SELECT id FROM users WHERE is_active = TRUE AND id <> ?', [actorId]);
+  return rows.map((r) => r.id);
+}
+
+// Whoever has commented on or reacted to a post -- the people with a reason to hear that it
+// changed, or that the conversation moved on.
+async function postParticipantIds(postId) {
+  const [rows] = await pool.query(
+    `SELECT author_user_id AS id FROM feed_comments WHERE post_id = ? AND deleted_at IS NULL
+     UNION
+     SELECT user_id AS id FROM feed_reactions WHERE post_id = ?`,
+    [postId, postId]
+  );
+  return rows.map((r) => r.id);
+}
+
+const REACTION_EMOJI = {
+  like: '👍', love: '❤️', care: '🤗', haha: '😆', wow: '😮', sad: '😢', angry: '😡',
+};
+
 // "data:image/jpeg;base64,...." -> { buffer, mimeType }. Returns null for anything that is not
 // a base64 image data URL, so a caller can reject rather than store junk.
 function parseDataUrl(dataUrl) {
@@ -203,6 +256,16 @@ router.post('/', requireAuth, async (req, res, next) => {
     );
     const [post] = await decoratePosts(rows, req.user.id);
     post.can_manage = true;
+
+    const photoNote = parsed.length ? `${parsed.length} photo${parsed.length === 1 ? '' : 's'}` : '';
+    await notify(await allOtherUserIds(req.user.id), {
+      actorId: req.user.id,
+      type: 'feed_new_post',
+      title: `${post.author.display_name} posted on the feed`,
+      message: excerpt(body) || (photoNote ? `Shared ${photoNote}` : ''),
+      postId,
+    });
+
     res.status(201).json(post);
   } catch (err) {
     await conn.rollback();
@@ -236,6 +299,18 @@ router.put('/:id', requireAuth, async (req, res, next) => {
     );
     const [shaped] = await decoratePosts(rows, req.user.id);
     shaped.can_manage = true;
+
+    // Only the author can edit, so telling them is pointless -- the people who need to know a
+    // post changed are the ones who already commented on it or reacted to it, whose response
+    // is attached to wording that has now moved.
+    await notify(await postParticipantIds(post.id), {
+      actorId: req.user.id,
+      type: 'feed_post_updated',
+      title: `${shaped.author.display_name} updated a post you responded to`,
+      message: excerpt(body),
+      postId: post.id,
+    });
+
     res.json(shaped);
   } catch (err) {
     next(err);
@@ -278,6 +353,26 @@ router.get('/images/:id', requireAuth, async (req, res, next) => {
   }
 });
 
+// One post on its own. A notification can point at a post that is far down the feed -- by the
+// time you click it, ten newer posts may sit above it -- so the bell's link fetches it
+// directly instead of paging until it appears.
+router.get('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT p.*, u.display_name AS author_name, u.avatar_data AS author_avatar
+       FROM feed_posts p JOIN users u ON u.id = p.author_user_id
+       WHERE p.id = ? AND p.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'That post is no longer available.' });
+    const [post] = await decoratePosts(rows, req.user.id);
+    post.can_manage = (await isModerator(req.user.id)) || post.author.id === req.user.id;
+    res.json(post);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:id/comments', requireAuth, async (req, res, next) => {
   try {
     const [rows] = await pool.query(
@@ -304,7 +399,7 @@ router.post('/:id/comments', requireAuth, async (req, res, next) => {
     if (!body) return res.status(400).json({ error: 'Write a comment first.' });
     if (body.length > MAX_BODY) return res.status(400).json({ error: `Keep a comment under ${MAX_BODY} characters.` });
 
-    const [[post]] = await pool.query('SELECT id FROM feed_posts WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
+    const [[post]] = await pool.query('SELECT id, author_user_id FROM feed_posts WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
     if (!post) return res.status(404).json({ error: 'That post is no longer available.' });
 
     const [result] = await pool.query(
@@ -316,6 +411,15 @@ router.post('/:id/comments', requireAuth, async (req, res, next) => {
        FROM feed_comments c JOIN users u ON u.id = c.author_user_id WHERE c.id = ?`,
       [result.insertId]
     );
+
+    await notify([post.author_user_id], {
+      actorId: req.user.id,
+      type: 'feed_comment',
+      title: `${row.author_name} commented on your post`,
+      message: excerpt(body),
+      postId: post.id,
+    });
+
     res.status(201).json({ ...shapeComment(row), can_manage: true });
   } catch (err) {
     next(err);
@@ -343,7 +447,7 @@ router.put('/:id/reaction', requireAuth, async (req, res, next) => {
     const reaction = String(req.body.reaction || '').toLowerCase();
     if (!REACTIONS.includes(reaction)) return res.status(400).json({ error: 'Unknown reaction.' });
 
-    const [[post]] = await pool.query('SELECT id FROM feed_posts WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
+    const [[post]] = await pool.query('SELECT id, author_user_id FROM feed_posts WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
     if (!post) return res.status(404).json({ error: 'That post is no longer available.' });
 
     const [[existing]] = await pool.query(
@@ -356,6 +460,17 @@ router.put('/:id/reaction', requireAuth, async (req, res, next) => {
       await pool.query('UPDATE feed_reactions SET reaction = ?, updated_at = NOW() WHERE id = ?', [reaction, existing.id]);
     } else {
       await pool.query('INSERT INTO feed_reactions (post_id, user_id, reaction) VALUES (?, ?, ?)', [post.id, req.user.id, reaction]);
+      // Only the FIRST reaction from this person notifies. Swapping Like for Love, or
+      // clearing and re-picking, is the same person still reacting once -- one bell for it,
+      // not one per change of mind.
+      const [[actor]] = await pool.query('SELECT display_name FROM users WHERE id = ?', [req.user.id]);
+      await notify([post.author_user_id], {
+        actorId: req.user.id,
+        type: 'feed_reaction',
+        title: `${actor?.display_name || 'Someone'} reacted ${REACTION_EMOJI[reaction] || ''} to your post`.trim(),
+        message: '',
+        postId: post.id,
+      });
     }
 
     res.json(await reactionSummary(post.id, req.user.id));
