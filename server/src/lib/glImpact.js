@@ -763,6 +763,76 @@ async function computeBillCreditGl(bc, lines) {
   return rows;
 }
 
+// GL Impact for a Bill Payment -- the settlement half of a Vendor Bill: DR the payable the
+// bill credited when it was raised / CR the bank account the money left from.
+//
+// Without this the books were one-sided in the payables direction: raising a bill credited
+// Accounts Payable and nothing ever took the liability off again, so the Trial Balance carried
+// every bill ever settled as still owing while the bank balance never moved.
+//
+// The payable is resolved PER BILL, by the same rule computeVendorBillGl credits it: a
+// standalone (PO-less) expense bill names its own payable on the form, a PO-based bill uses
+// 20100. The payment header's ap_account_id cannot stand in for that -- the create form copies
+// it from the bill's account_id (see the /for-vendor-bill route), which on a PO-based bill is
+// the PURCHASE account, so paying one would re-debit the expense and leave the liability
+// untouched. It is used only as a fallback when 20100 is absent from the chart.
+//
+// Only lines applied to bills post. A line applying a Bill Credit moves no cash and settles no
+// liability here: that credit already debited the payable when it was raised
+// (computeBillCreditGl), so posting it again would relieve the same liability twice. Same shape
+// as computeCustomerPaymentGl, which likewise counts only its invoice lines.
+async function computeBillPaymentGl(bp, lines) {
+  if (bp.status === 'voided' || !bp.bank_account_id) return [];
+  const [[bank]] = await pool.query('SELECT account_code, account_name FROM chart_of_accounts WHERE id = ?', [bp.bank_account_id]);
+  if (!bank) return [];
+
+  const billLines = (lines || []).filter((l) => l.vendor_bill_id && Number(l.applied_amount));
+  if (!billLines.length) return [];
+
+  const [bills] = await pool.query(
+    `SELECT vb.id, vb.purchase_order_id, coa.account_code, coa.account_name
+     FROM vendor_bills vb
+     LEFT JOIN chart_of_accounts coa ON coa.id = vb.account_id
+     WHERE vb.id IN (?)`,
+    [billLines.map((l) => l.vendor_bill_id)]
+  );
+  const billById = new Map(bills.map((b) => [b.id, b]));
+
+  const [[apAcct]] = await pool.query("SELECT account_code, account_name FROM chart_of_accounts WHERE account_code = '20100'");
+  let headerAp = null;
+  if (bp.ap_account_id) {
+    const [[acct]] = await pool.query('SELECT account_code, account_name FROM chart_of_accounts WHERE id = ?', [bp.ap_account_id]);
+    headerAp = acct || null;
+  }
+
+  // Grouped by payable, so a payment settling several bills that share one shows a single
+  // debit line rather than one per bill.
+  const byPayable = new Map();
+  let total = 0;
+  for (const l of billLines) {
+    const bill = billById.get(l.vendor_bill_id);
+    const payable = bill && !bill.purchase_order_id && bill.account_code
+      ? { account_code: bill.account_code, account_name: bill.account_name }
+      : (apAcct || headerAp);
+    // Nowhere honest to put the debit -- emit nothing rather than a one-sided entry that would
+    // unbalance the trial balance by exactly this payment.
+    if (!payable) return [];
+    const amount = Number(l.applied_amount) || 0;
+    const prev = byPayable.get(payable.account_code);
+    byPayable.set(payable.account_code, { ...payable, amount: (prev?.amount || 0) + amount });
+    total += amount;
+  }
+
+  total = Number(total.toFixed(2));
+  if (!total) return [];
+
+  const rows = [...byPayable.values()].map((p) => ({
+    account_code: p.account_code, account_name: p.account_name, debit: Number(p.amount.toFixed(2)), credit: 0,
+  }));
+  rows.push({ account_code: bank.account_code, account_name: bank.account_name, debit: 0, credit: total });
+  return rows;
+}
+
 // Aggregates every posted transaction across all 8 types into one flat list of GL
 // lines, for the 4 financial-statement reports (reportsEngine.js). Reuses the exact
 // same compute*Gl functions the live per-transaction GL Impact tabs already call, so
@@ -1162,6 +1232,22 @@ async function getPostedGlLines({ toDate, fromDate }) {
     }
   }
 
+  // Bill Payments -- the settlement side of the bills above (voided ones post nothing).
+  {
+    const { sql, params } = dateFilter('bp.date_created');
+    const [headers] = await pool.query(
+      `SELECT bp.* FROM bill_payments bp WHERE bp.status != 'voided' AND ${sql}`, params
+    );
+    for (const bp of headers) {
+      const [lines] = await pool.query('SELECT * FROM bill_payment_lines WHERE bill_payment_id = ?', [bp.id]);
+      const rows = await computeBillPaymentGl(bp, lines);
+      push(rows, {
+        entry_date: bp.date_created, source_type: 'bill_payment', source_no: bp.bill_payment_no, source_id: bp.id,
+        memo: bp.memo || null, location_id: bp.office_location_id || null, department_id: null,
+      });
+    }
+  }
+
   // Counter Sales (Sales Orders imported from a POS Z-Reading). Only these post: an
   // estimate-derived order is a promise of work and posts when it is invoiced, so the filter
   // on sales_layout is what keeps ordinary orders out of the ledger.
@@ -1257,5 +1343,6 @@ module.exports = {
   computeSalesOrderGl,
   computeInventoryAdjustmentGl,
   computeBillCreditGl,
+  computeBillPaymentGl,
   getPostedGlLines,
 };

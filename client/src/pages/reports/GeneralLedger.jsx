@@ -10,6 +10,7 @@ const SOURCE_LABELS = {
   sales_invoice: 'Invoice', assembly_build: 'Assembly Build', item_delivery: 'Item Delivery',
   item_fulfillment: 'Item Fulfillment', item_receipt: 'Item Receipt', vendor_bill: 'Vendor Bill',
   inventory_adjustment: 'Inventory Adjustment', bill_credit: 'Bill Credit',
+  bill_payment: 'Bill Payment',
   // Sales Orders reach the ledger only when they are POS counter sales imported from a
   // Z-Reading; estimate-derived orders post through their invoice instead.
   sales_order: 'Counter Sales',

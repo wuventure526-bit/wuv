@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { assertPeriodOpen } = require('../lib/accountingPeriod');
+const { computeBillPaymentGl } = require('../lib/glImpact');
 
 const router = express.Router();
 // Reached from an Open Vendor Bill's "Bill Payment" button, confirmed against the real
@@ -162,7 +163,9 @@ router.get('/:id', requireAuth, requirePermission(ROUTE, 'can_view'), async (req
       [req.params.id]
     );
 
-    res.json({ ...bp, lines });
+    const glImpact = await computeBillPaymentGl(bp, lines);
+
+    res.json({ ...bp, lines, gl_impact: glImpact });
   } catch (err) {
     next(err);
   }
