@@ -549,22 +549,70 @@ async function computeVendorBillGl(vb, lines) {
   if (isExpenseBill) {
     // Resolved from account_id here rather than relying on the caller having joined the
     // account in -- the Reports engine passes raw vendor_bill_lines rows.
-    const byAccount = new Map(); // account_id -> net amount
+    // Keyed by account AND department, because the department is what the by-department
+    // Income Statement columns read off each row -- collapsing two departments' rent onto one
+    // line would file the whole bill under whichever came first. Cheques already do this
+    // (their expense rows carry their own department_id); this is the same shape.
+    const byAccount = new Map(); // `${account_id}|${department_id}` -> { accountId, departmentId, amount }
     for (const l of lines || []) {
       if (!l.account_id) continue;
       const amount = Number(l.net_of_tax) || 0;
       if (!amount) continue;
-      byAccount.set(l.account_id, (byAccount.get(l.account_id) || 0) + amount);
+      const departmentId = l.department_id || null;
+      const key = `${l.account_id}|${departmentId ?? ''}`;
+      const prev = byAccount.get(key);
+      byAccount.set(key, { accountId: l.account_id, departmentId, amount: (prev?.amount || 0) + amount });
     }
     if (byAccount.size) {
-      const [accts] = await pool.query('SELECT id, account_code, account_name FROM chart_of_accounts WHERE id IN (?)', [[...byAccount.keys()]]);
-      for (const acct of accts) {
-        const amount = Number((byAccount.get(acct.id) || 0).toFixed(2));
-        if (amount) rows.push({ account_code: acct.account_code, account_name: acct.account_name, debit: amount, credit: 0 });
+      const accountIds = [...new Set([...byAccount.values()].map((e) => e.accountId))];
+      const [accts] = await pool.query('SELECT id, account_code, account_name FROM chart_of_accounts WHERE id IN (?)', [accountIds]);
+      const acctById = new Map(accts.map((a) => [a.id, a]));
+      for (const entry of byAccount.values()) {
+        const acct = acctById.get(entry.accountId);
+        const amount = Number(entry.amount.toFixed(2));
+        if (acct && amount) {
+          rows.push({
+            account_code: acct.account_code, account_name: acct.account_name, debit: amount, credit: 0,
+            department_id: entry.departmentId,
+          });
+        }
       }
     }
   } else if (netOfTax && vb.account_code) {
-    rows.push({ account_code: vb.account_code, account_name: vb.account_name, debit: netOfTax, credit: 0 });
+    // A PO-based bill books the whole net to the header's purchase account, but its lines can
+    // still name different departments. Split the debit by department when the lines add back
+    // to the header total; when they don't -- or name none -- keep the single row rather than
+    // invent an allocation the bill never stated.
+    const byDept = new Map(); // department_id -> net amount
+    let lineTotal = 0;
+    for (const l of lines || []) {
+      const amount = Number(l.net_of_tax) || 0;
+      if (!amount) continue;
+      const departmentId = l.department_id || null;
+      byDept.set(departmentId, (byDept.get(departmentId) || 0) + amount);
+      lineTotal += amount;
+    }
+    const departments = [...byDept.entries()];
+    const reconciles = departments.length > 0 && Math.abs(Number(lineTotal.toFixed(2)) - netOfTax) <= 0.01;
+    if (reconciles) {
+      // Last share takes the rounding residue, so the split always adds back to the header's
+      // own net and the entry cannot drift a centavo out of balance.
+      let allocated = 0;
+      departments.forEach(([departmentId, amount], i) => {
+        const share = i === departments.length - 1
+          ? Number((netOfTax - allocated).toFixed(2))
+          : Number(amount.toFixed(2));
+        allocated = Number((allocated + share).toFixed(2));
+        if (share) {
+          rows.push({
+            account_code: vb.account_code, account_name: vb.account_name, debit: share, credit: 0,
+            department_id: departmentId,
+          });
+        }
+      });
+    } else {
+      rows.push({ account_code: vb.account_code, account_name: vb.account_name, debit: netOfTax, credit: 0 });
+    }
   }
 
   if (taxAmount) {
@@ -1225,9 +1273,13 @@ async function getPostedGlLines({ toDate, fromDate }) {
       // passing [] here would post a one-sided entry.
       const [lines] = await pool.query('SELECT * FROM vendor_bill_lines WHERE vendor_bill_id = ?', [vb.id]);
       const rows = await computeVendorBillGl(vb, lines);
+      // No department_id in meta: the department lives on the BILL LINE, so each expense row
+      // carries its own and push() keeps row fields when meta omits them. Passing null here
+      // overrode every one of them, which is why a bill whose line named Accounting still
+      // showed up as Unassigned on the by-department Income Statement.
       push(rows, {
         entry_date: vb.date_created, source_type: 'vendor_bill', source_no: vb.bill_no, source_id: vb.id, memo: vb.memo || null,
-        location_id: vb.office_location_id || null, department_id: null,
+        location_id: vb.office_location_id || null,
       });
     }
   }
