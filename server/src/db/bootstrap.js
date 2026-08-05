@@ -69,6 +69,7 @@ const STEPS = [
   ['alter-sales-orders-daily-collections.js', 'daily cash & collections sales order layout'],
   ['create-pos-category-accounts.js', 'POS category to revenue account mapping'],
   ['alter-sales-orders-deposit.js', 'undeposited/deposited counter sales'],
+  ['alter-sales-orders-department.js', 'department assignment on counter sales'],
   ['create-accounting-periods.js', 'accounting periods'],
   ['register-ar-aging-page.js', 'A/R aging report page'],
 

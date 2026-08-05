@@ -1179,7 +1179,10 @@ async function getPostedGlLines({ toDate, fromDate }) {
       const rows = await computeSalesOrderGl(so, lines);
       push(rows, {
         entry_date: so.date_created, source_type: 'sales_order', source_no: so.sales_order_no, source_id: so.id,
-        memo: so.memo || null, location_id: so.office_location_id || null, department_id: null,
+        memo: so.memo || null, location_id: so.office_location_id || null,
+        // Assigned at import (required there), so only orders imported before the field
+        // existed still come through without one.
+        department_id: so.department_id || null,
       });
     }
   }

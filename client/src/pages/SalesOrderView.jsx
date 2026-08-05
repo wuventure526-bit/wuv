@@ -213,6 +213,9 @@ export default function SalesOrderView() {
             <div>Date Created : <span className="hi">{so.date_created ? String(so.date_created).slice(0, 10) : ''}</span></div>
             <div>Sales Division : <span className="hi">{so.sales_division_name}</span></div>
             <div>Office Location : <span className="hi">{so.office_location_name}</span></div>
+            {/* Only imported counter sales carry one -- an estimate-derived order's department
+                follows from its sales division, so the row would just read empty. */}
+            {isDailyCollections && <div>Department : <span className="hi">{so.department_name}</span></div>}
             <div>Contract Desc. : <span className="hi">{so.contract_description}</span></div>
             <div>Ref # : <span className="hi">{so.ref_no}</span></div>
             <div>Memo : <span className="hi">{so.memo}</span></div>

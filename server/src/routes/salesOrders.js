@@ -153,15 +153,23 @@ router.post('/import', requireAuth, requirePermission(ROUTE, 'can_add'), async (
   const conn = await pool.getConnection();
   try {
     const {
-      customer_id: customerId, office_location_id: officeLocationId, sales_rep_id: salesRepId,
-      memo, shifts,
+      customer_id: customerId, office_location_id: officeLocationId, department_id: departmentId,
+      sales_rep_id: salesRepId, memo, shifts,
     } = req.body;
 
     if (!customerId) return res.status(400).json({ error: 'Select the customer to record these sales against.' });
+    // Required, unlike the office location: this order is the ledger entry for the shift's
+    // takings, and without a department its revenue and Undeposited Funds fall out of every
+    // department-scoped report with no way to place them after the fact.
+    if (!departmentId) return res.status(400).json({ error: 'Select the department these sales belong to.' });
     if (!Array.isArray(shifts) || !shifts.length) return res.status(400).json({ error: 'Nothing to import.' });
 
     const [[customer]] = await conn.query('SELECT id FROM customers WHERE id = ?', [customerId]);
     if (!customer) return res.status(400).json({ error: 'Customer not found.' });
+
+    const [[department]] = await conn.query('SELECT id, is_active FROM departments WHERE id = ?', [departmentId]);
+    if (!department) return res.status(400).json({ error: 'Department not found.' });
+    if (!department.is_active) return res.status(400).json({ error: 'That department is no longer active.' });
 
     const n = (v) => (v === null || v === undefined || v === '' ? 0 : Number(v));
     const TOLERANCE = 0.01;
@@ -255,12 +263,12 @@ router.post('/import', requireAuth, requirePermission(ROUTE, 'can_add'), async (
     const [result] = await conn.query(
       `INSERT INTO sales_orders
          (sales_order_no, estimate_id, sales_layout, pos_branch_code, pos_source_file, date_created,
-          customer_id, office_location_id, sales_rep_id, contract_description, memo, status,
+          customer_id, office_location_id, department_id, sales_rep_id, contract_description, memo, status,
           subtotal, discount_total, net_of_tax, tax_total, total_amount, est_gp_rate, est_gp_amount)
-       VALUES ('', NULL, 'daily_collections', ?, ?, ?, ?, ?, ?, ?, ?, 'undeposited', ?, 0, ?, ?, ?, 0, 0)`,
+       VALUES ('', NULL, 'daily_collections', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'undeposited', ?, 0, ?, ?, ?, 0, 0)`,
       [
         branches || null, shifts.map((s) => s.source_file).filter(Boolean).join(', ').slice(0, 255) || null,
-        lastDate, customerId, officeLocationId || null, salesRepId || null, contractDescription,
+        lastDate, customerId, officeLocationId || null, departmentId, salesRepId || null, contractDescription,
         memo || null, netOfTax, netOfTax, taxTotal, totalAmount,
       ]
     );
@@ -322,7 +330,7 @@ router.get('/:id', requireAuth, requirePermission(ROUTE, 'can_view'), async (req
     const [[so]] = await pool.query(
       `SELECT so.*, e.estimate_no, c.name AS customer_name, cc.contact_name,
               sd.name AS sales_division_name, loc.location_name AS office_location_name,
-              bp.po_number AS blanket_po_no,
+              dept.name AS department_name, bp.po_number AS blanket_po_no,
               CONCAT(sr.first_name, ' ', sr.last_name) AS sales_rep_name,
               CONCAT(pb.first_name, ' ', pb.last_name) AS prepared_by_name,
               CONCAT(ap.first_name, ' ', ap.last_name) AS approved_by_name
@@ -332,6 +340,7 @@ router.get('/:id', requireAuth, requirePermission(ROUTE, 'can_view'), async (req
        LEFT JOIN customer_contacts cc ON cc.id = so.contact_person_id
        LEFT JOIN sales_divisions sd ON sd.id = so.sales_division_id
        LEFT JOIN locations loc ON loc.id = so.office_location_id
+       LEFT JOIN departments dept ON dept.id = so.department_id
        LEFT JOIN blanket_pos bp ON bp.id = so.blanket_po_id
        LEFT JOIN employees sr ON sr.id = so.sales_rep_id
        LEFT JOIN employees pb ON pb.id = so.prepared_by_id

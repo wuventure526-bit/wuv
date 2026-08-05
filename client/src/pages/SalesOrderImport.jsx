@@ -22,8 +22,10 @@ export default function SalesOrderImport() {
 
   const [customers, setCustomers] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [customer, setCustomer] = useState(null);
   const [location, setLocation] = useState(null);
+  const [department, setDepartment] = useState(null);
   const [memo, setMemo] = useState('');
 
   const [shifts, setShifts] = useState([]);
@@ -35,9 +37,13 @@ export default function SalesOrderImport() {
     Promise.all([
       api.get('/customers', { params: { limit: 1000 } }),
       api.get('/lookups/locations'),
-    ]).then(([custRes, locRes]) => {
+      api.get('/lookups/departments'),
+    ]).then(([custRes, locRes, deptRes]) => {
       setCustomers(custRes.data.rows || custRes.data);
       setLocations(locRes.data);
+      // Retired departments are excluded rather than shown and refused: the server rejects
+      // an inactive one, and nothing here should be assignable to a department that is gone.
+      setDepartments((deptRes.data || []).filter((d) => d.is_active));
     }).catch(() => {});
   }, []);
 
@@ -87,16 +93,18 @@ export default function SalesOrderImport() {
   function near(a, b) { return Math.abs(Number(a.toFixed(2)) - Number(b.toFixed(2))) <= 0.01; }
 
   const problems = usable.map(rowProblem).filter(Boolean);
-  const canCreate = usable.length > 0 && problems.length === 0 && !!customer;
+  const canCreate = usable.length > 0 && problems.length === 0 && !!customer && !!department;
 
   async function handleCreate() {
     setError('');
     if (!customer) { setError('Select the customer to record these sales against.'); return; }
+    if (!department) { setError('Select the department these sales belong to.'); return; }
     setSaving(true);
     try {
       const { data } = await api.post('/sales-orders/import', {
         customer_id: customer.id,
         office_location_id: location?.id || null,
+        department_id: department.id,
         memo,
         shifts: usable.map((s) => ({
           import_key: s.import_key, source_file: s.source_file, store_name: s.store_name,
@@ -149,7 +157,7 @@ export default function SalesOrderImport() {
             <div className="review-grid" style={{ gridTemplateColumns: '1fr 1fr 260px' }}>
               <div>
                 <div className="field">
-                  <label>Customer</label>
+                  <label>Customer *</label>
                   <EntityPicker
                     label="Customer" items={customers} value={customer?.id || ''} getLabel={(c) => c?.name}
                     columns={[{ key: 'name', label: 'Name' }]} searchKeys={['name']}
@@ -166,6 +174,18 @@ export default function SalesOrderImport() {
                 </div>
               </div>
               <div>
+                {/* Required, unlike Office Location: this order posts straight to the ledger,
+                    and its revenue has to land in a department the way every other posting
+                    document's does. */}
+                <div className="field">
+                  <label>Department *</label>
+                  <EntityPicker
+                    label="Department" items={departments} value={department?.id || ''} getLabel={(d) => d?.name}
+                    columns={[{ key: 'name', label: 'Name' }]} searchKeys={['name']}
+                    onSelect={setDepartment}
+                  />
+                  {!department && <div className="muted" style={{ marginTop: 4 }}>Assign the department these takings belong to.</div>}
+                </div>
                 <div className="field"><label>Memo</label><textarea rows={3} value={memo} onChange={(e) => setMemo(e.target.value)} /></div>
               </div>
               <div className="card" style={{ background: 'var(--surface-2, #f3f4f6)' }}>
