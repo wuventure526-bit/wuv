@@ -33,6 +33,53 @@ const pdfUpload = multer({
   },
 });
 
+// A Z-Reading prints whoever the cashier typed at the terminal -- "MaryRose", "CRISTY" -- not
+// an employee code, so the name has to be matched back to an employee record by hand.
+//
+// Matched in tiers (full name, then first name, then last name) and ONLY when exactly one
+// employee answers at that tier. Two people called Cristy means the report does not say which,
+// and quietly picking the lower id would put a stranger's name on the day's takings. An
+// unmatched name is not an error: the printed name is stored either way, and the order simply
+// carries no sales rep.
+const normalizeName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+async function buildEmployeeMatcher(conn) {
+  const [employees] = await conn.query(
+    'SELECT id, first_name, last_name FROM employees WHERE is_active = TRUE'
+  );
+
+  const tiers = [new Map(), new Map(), new Map()]; // full name, first name, last name
+  const add = (map, key, id) => {
+    if (!key) return;
+    // null marks the key as ambiguous, so a later lookup refuses it rather than guessing.
+    map.set(key, map.has(key) ? null : id);
+  };
+  for (const e of employees) {
+    add(tiers[0], normalizeName(`${e.first_name} ${e.last_name}`), e.id);
+    add(tiers[1], normalizeName(e.first_name), e.id);
+    add(tiers[2], normalizeName(e.last_name), e.id);
+  }
+
+  return (printedName) => {
+    const key = normalizeName(printedName);
+    if (!key) return null;
+    for (const tier of tiers) {
+      const hit = tier.get(key);
+      if (hit) return hit;
+    }
+    return null;
+  };
+}
+
+// "2026-08-01" + "07:12" -> "2026-08-01 07:12:00", and null for anything malformed rather than
+// a MySQL zero-date.
+function toDateTime(date, time) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return null;
+  if (!/^\d{1,2}:\d{2}$/.test(time || '')) return null;
+  const [h, m] = time.split(':');
+  return `${date} ${h.padStart(2, '0')}:${m}:00`;
+}
+
 router.get('/', requireAuth, requirePermission(ROUTE, 'can_view'), async (req, res, next) => {
   try {
     const {
@@ -237,10 +284,24 @@ router.post('/import', requireAuth, requirePermission(ROUTE, 'can_add'), async (
         branch_code: s.branch_code || null,
         shift: s.shift || null,
         cashier: s.closed_by || null,
+        // Both attendants as the report printed them, with the times the till was opened and
+        // closed -- a shift can change hands mid-day (786 opened and closed on MaryRose, 784
+        // opened on MaryRose and closed on CRISTY).
+        opened_by: s.opened_by || null,
+        opened_at: toDateTime(s.opened_date, s.opened_time),
+        closed_at: toDateTime(s.closed_date, s.closed_time),
         beginning_or: s.beginning_or || null,
         ending_or: s.ending_or || null,
         store_name: s.store_name || null,
       });
+    }
+
+    // Names on the report resolved to employee records, so the order's Sales Rep is a real
+    // person and not a string. Built once for the whole import rather than per shift.
+    const matchEmployee = await buildEmployeeMatcher(conn);
+    for (const r of rows) {
+      r.opened_employee_id = matchEmployee(r.opened_by);
+      r.closed_employee_id = matchEmployee(r.cashier);
     }
 
     rows.sort((a, b) => a.sale_date.localeCompare(b.sale_date));
@@ -255,6 +316,24 @@ router.post('/import', requireAuth, requirePermission(ROUTE, 'can_add'), async (
     const period = firstDate === lastDate ? firstDate : `${firstDate} to ${lastDate}`;
     const contractDescription = `Daily Sales & Collections — ${[store, branches].filter(Boolean).join(' ')} — ${period}`.slice(0, 500);
 
+    // The Sales Rep is the cashier the earliest shift was CLOSED by -- the person who ran the
+    // Z-Reading and is accountable for the money it reports -- falling back to whoever opened
+    // that shift if the closing name matched no employee. An explicit sales_rep_id in the
+    // request still wins, and an unmatched name simply leaves the field empty rather than
+    // guessing. One order can collect several shifts with different attendants, so the per-line
+    // names below are the full record; this is the header's single best answer.
+    const headShift = rows[0];
+    const resolvedSalesRepId = salesRepId
+      || headShift.closed_employee_id
+      || headShift.opened_employee_id
+      || null;
+
+    // Prepared By is whoever uploaded the PDFs -- the only person this document can attribute
+    // the act of importing to. Users are linked to an employee record; an account without one
+    // leaves it blank.
+    const [[me]] = await conn.query('SELECT employee_id FROM users WHERE id = ?', [req.user.id]);
+    const preparedById = me?.employee_id || null;
+
     await conn.beginTransaction();
     // estimate_id stays NULL: counter sales never had a quotation behind them. Status starts
     // at 'undeposited' -- the money was taken at the counter and is sitting in Undeposited
@@ -263,12 +342,14 @@ router.post('/import', requireAuth, requirePermission(ROUTE, 'can_add'), async (
     const [result] = await conn.query(
       `INSERT INTO sales_orders
          (sales_order_no, estimate_id, sales_layout, pos_branch_code, pos_source_file, date_created,
-          customer_id, office_location_id, department_id, sales_rep_id, contract_description, memo, status,
+          customer_id, office_location_id, department_id, sales_rep_id, prepared_by_id,
+          pos_cashier, pos_closed_at, contract_description, memo, status,
           subtotal, discount_total, net_of_tax, tax_total, total_amount, est_gp_rate, est_gp_amount)
-       VALUES ('', NULL, 'daily_collections', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'undeposited', ?, 0, ?, ?, ?, 0, 0)`,
+       VALUES ('', NULL, 'daily_collections', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'undeposited', ?, 0, ?, ?, ?, 0, 0)`,
       [
         branches || null, shifts.map((s) => s.source_file).filter(Boolean).join(', ').slice(0, 255) || null,
-        lastDate, customerId, officeLocationId || null, departmentId, salesRepId || null, contractDescription,
+        lastDate, customerId, officeLocationId || null, departmentId, resolvedSalesRepId, preparedById,
+        headShift.cashier, headShift.closed_at, contractDescription,
         memo || null, netOfTax, netOfTax, taxTotal, totalAmount,
       ]
     );
@@ -281,12 +362,14 @@ router.post('/import', requireAuth, requirePermission(ROUTE, 'can_add'), async (
       const [lineRes] = await conn.query(
         `INSERT INTO sales_order_lines
            (sales_order_id, line_no, pos_import_key, pos_branch_code, pos_shift, pos_cashier,
+            pos_opened_by, pos_opened_at, pos_closed_at, pos_opened_employee_id, pos_closed_employee_id,
             pos_beginning_or, pos_ending_or, sale_date, cash, collected_cash, gcash, collected_gcash,
             collected_bank_deposit, total_daily_sales, total_cash_to_deposit, total_gcash,
             uncollected_sales, vat_ex, vat_12, vat_inc)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           salesOrderId, lineNo, r.import_key, r.branch_code, r.shift, r.cashier,
+          r.opened_by, r.opened_at, r.closed_at, r.opened_employee_id, r.closed_employee_id,
           r.beginning_or, r.ending_or, r.sale_date, r.cash, r.collected_cash, r.gcash, r.collected_gcash,
           r.collected_bank_deposit, r.total_daily_sales, r.total_cash_to_deposit, r.total_gcash,
           r.uncollected_sales, r.vat_ex, r.vat_12, r.vat_inc,

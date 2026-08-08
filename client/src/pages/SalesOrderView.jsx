@@ -27,8 +27,27 @@ const STATUS_LABELS = {
 // how the day's takings split across cash, GCash and bank deposit, what is still
 // uncollected, and the VAT breakdown. None of the job/production columns below apply, so
 // the two grids are separate lists rather than one list with most cells blank.
+// Just the clock time: the date is already the row's first column, and a shift opens and
+// closes on the day it belongs to.
+function shiftTime(v) {
+  if (!v) return '';
+  const m = /\d{2}:\d{2}/.exec(String(v).slice(11));
+  return m ? m[0] : '';
+}
+
 const DAILY_COLLECTION_COLUMNS = [
   { key: 'sale_date', label: 'Date', render: (r) => (r.sale_date ? String(r.sale_date).slice(0, 10) : '') },
+  // Who had the till, from the Z-Reading's own OPENED/CLOSED lines.
+  {
+    key: 'pos_opened_by',
+    label: 'Opened By',
+    render: (r) => [r.pos_opened_by, shiftTime(r.pos_opened_at)].filter(Boolean).join(' · '),
+  },
+  {
+    key: 'pos_cashier',
+    label: 'Closed By',
+    render: (r) => [r.pos_cashier, shiftTime(r.pos_closed_at)].filter(Boolean).join(' · '),
+  },
   { key: 'cash', label: 'Cash', money: true },
   { key: 'collected_cash', label: 'Collected Cash', money: true },
   { key: 'gcash', label: 'GCash', money: true },
@@ -270,9 +289,12 @@ export default function SalesOrderView() {
                 {lines.length > 0 && (
                   <tr>
                     <td><strong>Total</strong></td>
+                    {/* Only the money columns carry a total -- the attendant columns hold
+                        names, and summing those produced an empty cell by accident rather
+                        than by intent. */}
                     {DAILY_COLLECTION_COLUMNS.slice(1).map((c) => (
                       <td key={c.key}>
-                        <strong>{money(lines.reduce((s, l) => s + Number(l[c.key] || 0), 0))}</strong>
+                        {c.money && <strong>{money(lines.reduce((s, l) => s + Number(l[c.key] || 0), 0))}</strong>}
                       </td>
                     ))}
                   </tr>

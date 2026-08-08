@@ -156,12 +156,26 @@ function parseZReading(rawText) {
   }
 
   // ---- verification: every figure the report states, recomputed from its own others ----
+  //
+  // A failed check is a WARNING, not a refusal. The two are genuinely different problems:
+  // a missing figure (above) means the document could not be read and there is nothing to
+  // import, while a check that does not tie means the document was read perfectly and the POS
+  // printed figures that disagree with each other.
+  //
+  // Branch 786's 08/02 reading is the case in point: its categories add to GROSS, its
+  // VATABLE + VAT adds to NET SALES, but its tender lines add to 6,603.00 against a stated
+  // 6,597.00 -- the POS is six pesos out. Refusing it outright meant that day's takings could
+  // never be recorded at all, which is a worse answer than showing the operator the
+  // discrepancy and letting them settle it against the till before saving. The save-time
+  // invariants in salesOrders.js are unchanged, so nothing that fails to add up can be stored
+  // either way.
   const checks = [];
+  const warnings = [];
   function check(label, stated, computed, note) {
     if (stated === null || computed === null || !Number.isFinite(computed)) return;
     const ok = Math.abs(round2(stated) - round2(computed)) <= TOLERANCE;
     checks.push({ label, stated: round2(stated), computed: round2(computed), ok, note });
-    if (!ok) errors.push(`${label}: report says ${round2(stated).toFixed(2)} but ${note} gives ${round2(computed).toFixed(2)}.`);
+    if (!ok) warnings.push(`${label}: report says ${round2(stated).toFixed(2)} but ${note} gives ${round2(computed).toFixed(2)}.`);
   }
 
   if (categories.length) {
@@ -193,6 +207,7 @@ function parseZReading(rawText) {
   return {
     ok: errors.length === 0,
     errors,
+    warnings,
     checks,
     store_name: storeName,
     tin: tin ? tin[1] : null,

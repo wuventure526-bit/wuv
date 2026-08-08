@@ -109,6 +109,10 @@ export default function SalesOrderImport() {
         shifts: usable.map((s) => ({
           import_key: s.import_key, source_file: s.source_file, store_name: s.store_name,
           branch_code: s.branch_code, shift: s.shift, closed_by: s.closed_by,
+          // Both attendants and both times, so the order records who had the till and when --
+          // the closing cashier is also what the server resolves the Sales Rep from.
+          opened_by: s.opened_by, opened_date: s.opened_date, opened_time: s.opened_time,
+          closed_date: s.closed_date, closed_time: s.closed_time,
           beginning_or: s.beginning_or, ending_or: s.ending_or,
           // The Z-Reading's category breakdown has to travel with the row: it is what the
           // GL entry splits revenue by (laundry vs water refilling). Without it the order
@@ -197,6 +201,21 @@ export default function SalesOrderImport() {
             </div>
           </div>
 
+          {/* The report was read fine but its own figures disagree. Shown in the milder tone
+              and separately from the refusals above: the row is still importable once the
+              operator settles the difference in the grid. */}
+          {usable.filter((s) => (s.warnings || []).length).map((s) => (
+            <div className="warning-banner" style={{ marginTop: 16 }} key={`warn-${s.import_key}`}>
+              <strong>{s.source_file}</strong> — this report does not agree with itself:
+              <ul style={{ margin: '8px 0 0 18px' }}>
+                {(s.warnings || []).map((w, j) => <li key={j}>{w}</li>)}
+              </ul>
+              <div style={{ marginTop: 6 }}>
+                Check the figures against the till and correct Cash / GCash below before creating the order.
+              </div>
+            </div>
+          ))}
+
           {shifts.filter((s) => !s.ok || s.duplicate).map((s, i) => (
             <div className="error-banner" style={{ marginTop: 16 }} key={`bad-${i}`}>
               <strong>{s.source_file}</strong>
@@ -229,7 +248,18 @@ export default function SalesOrderImport() {
                       <tr key={s.import_key} title={problem || ''}>
                         <td>{s.sale_date}</td>
                         <td>{s.branch_code}/{s.shift}</td>
-                        <td>{money(s.cash)}</td>
+                        {/* Editable, unlike the rest of the printed figures. A POS that prints
+                            a tender split not adding to its own net sales (branch 786 is six
+                            pesos out) would otherwise be unimportable forever -- the operator
+                            settles it against the till, and the totals still have to tie
+                            before Create will save anything. */}
+                        <td>
+                          <input
+                            type="number" step="0.01" style={{ width: 110 }}
+                            value={s.cash}
+                            onChange={(e) => updateShift(s.import_key, { cash: e.target.value })}
+                          />
+                        </td>
                         {/* The Z-Reading prints only a single COLLECTED total, never the split
                             by tender -- so these two are the operator's to fill in. */}
                         <td>
@@ -239,7 +269,13 @@ export default function SalesOrderImport() {
                             onChange={(e) => updateShift(s.import_key, { collected_cash: e.target.value })}
                           />
                         </td>
-                        <td>{money(s.gcash)}</td>
+                        <td>
+                          <input
+                            type="number" step="0.01" style={{ width: 110 }}
+                            value={s.gcash}
+                            onChange={(e) => updateShift(s.import_key, { gcash: e.target.value })}
+                          />
+                        </td>
                         <td>
                           <input
                             type="number" step="0.01" style={{ width: 110 }}
@@ -283,8 +319,15 @@ export default function SalesOrderImport() {
           {usable.map((s) => (
             <div className="card" style={{ marginTop: 16 }} key={`detail-${s.import_key}`}>
               <h3 className="subsection" style={{ marginTop: 0 }}>
-                {s.branch_code}/{s.shift} — {s.sale_date} · {s.closed_by} · OR {s.beginning_or} → {s.ending_or}
+                {s.branch_code}/{s.shift} — {s.sale_date} · OR {s.beginning_or} → {s.ending_or}
               </h3>
+              {/* Who had the till and when. The closing cashier becomes the order's Sales Rep
+                  where that name matches an employee record. */}
+              <div className="muted" style={{ marginBottom: 10 }}>
+                Opened <strong>{s.opened_time || '—'}</strong> by <strong>{s.opened_by || '—'}</strong>
+                {' · '}
+                Closed <strong>{s.closed_time || '—'}</strong> by <strong>{s.closed_by || '—'}</strong>
+              </div>
               <div className="review-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
                 <div>
                   <div className="muted" style={{ marginBottom: 6 }}>Category breakdown</div>
