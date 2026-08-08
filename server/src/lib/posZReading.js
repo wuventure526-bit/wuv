@@ -119,13 +119,27 @@ function parseZReading(rawText) {
     if (f[required] === null) errors.push(`Could not read ${required.replace(/_/g, ' ').toUpperCase()} from the report.`);
   }
 
+  // A name is whatever the report printed before the figures -- it is NOT restricted to a
+  // guessed alphabet. An earlier version allowed only [A-Z0-9 &.'-/], and a real customer
+  // called "FRESH AND TIDY ;;" silently failed to match: its 2,287.00 dropped out of the
+  // aging list, the UNCOLLECTED total then disagreed with its own lines by exactly that
+  // amount, and the whole shift was refused as unreadable. A cashier typing a stray
+  // character must never cost a day's takings its import.
+  //
+  // The structure carries the match instead of the alphabet: a line qualifies by ending in
+  // an amount (and, for the aging list, a date before it), which is what actually
+  // distinguishes a data row from anything else inside these blocks.
+  const NAME = String.raw`([^\n]*?\S)`;
+  const AMOUNT = String.raw`(\(?-?[\d,]+\.\d{2}\)?)`;
+  const EOL = String.raw`[ \t\r]*(?=\n|$)`;
+
   // Category breakdown: everything between the GROSS line and OTHER CHARGES.
   const categories = [];
   const grossIdx = text.search(/(?:^|\n)[ \t]*GROSS[ \t]/i);
   const otherChargesIdx = text.search(/(?:^|\n)[ \t]*OTHER CHARGES/i);
   if (grossIdx >= 0 && otherChargesIdx > grossIdx) {
     const block = text.slice(text.indexOf('\n', grossIdx + 1), otherChargesIdx);
-    for (const m of block.matchAll(/(?:^|\n)[ \t]*([A-Z][A-Z0-9 &.'\-/]*?)[ \t]+(\(?-?[\d,]+\.\d{2}\)?)/g)) {
+    for (const m of block.matchAll(new RegExp(String.raw`(?:^|\n)[ \t]*${NAME}[ \t]+${AMOUNT}${EOL}`, 'g'))) {
       categories.push({ name: collapse(m[1]), amount: num(m[2]) });
     }
   }
@@ -136,7 +150,7 @@ function parseZReading(rawText) {
   const payinsIdx = text.search(/(?:^|\n)[ \t]*PAYINS/i);
   if (uncIdx >= 0 && payinsIdx > uncIdx) {
     const block = text.slice(text.indexOf('\n', uncIdx + 1), payinsIdx);
-    for (const m of block.matchAll(/(?:^|\n)[ \t]*([A-Z][A-Z0-9 &.'\-/]*?)[ \t]+(\d{1,2}\/\d{1,2})[ \t]+(\(?-?[\d,]+\.\d{2}\)?)/g)) {
+    for (const m of block.matchAll(new RegExp(String.raw`(?:^|\n)[ \t]*${NAME}[ \t]+(\d{1,2}/\d{1,2})[ \t]+${AMOUNT}${EOL}`, 'g'))) {
       uncollectedItems.push({ customer: collapse(m[1]), reference_date: m[2], amount: num(m[3]) });
     }
   }
